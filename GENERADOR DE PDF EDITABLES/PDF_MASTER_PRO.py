@@ -224,10 +224,7 @@ class PDFMasterPro(ctk.CTk):
             num_fields = len(result['fields'])
             msg = f"Se han detectado {num_fields} campos en el PDF.\n\n¿Deseas importarlos automáticamente?"
             if messagebox.askyesno("Campos Detectados", msg):
-                # Limpiar campos actuales (Modo Batch)
-                self.app_generator.clear_fields(request_layout=False, request_preview=False)
-                
-                # Importar campos de forma progresiva (Chunks de 10)
+                # Cargar campos directamente al editor visual (INSTANTÁNEO)
                 fields = result['fields']
                 
                 if result.get('title'):
@@ -235,38 +232,71 @@ class PDFMasterPro(ctk.CTk):
                     self.app_generator.title_entry.insert(0, result['title'])
                 
                 self._import_fields_sequentially(fields, 0, bg_path)
-                return # El resto se hace en la recursión
+                return # El resto se hace en la función
         
         # Si no hay campos o el usuario dijo no
         self._update_page_info()
         self.status_label.configure(text=f"PDF Cargado: {os.path.basename(bg_path)}", text_color="#34C759")
 
     def _import_fields_sequentially(self, fields, start_idx, bg_path):
-        """Añade campos en bloques para mantener la UI fluida pero rápida."""
-        chunk_size = 50 # Bloques más grandes para mayor velocidad
+        """Importación ULTRA-RÁPIDA: Carga directamente al editor visual (canvas), no al generador."""
         total = len(fields)
-        end_idx = min(start_idx + chunk_size, total)
         
-        for i in range(start_idx, end_idx):
-            f = fields[i]
-            # Solo redibujar en el último campo de la ÚLTIMA tanda
-            is_global_last = (i == total - 1)
-            self.app_generator.add_field_row(
-                default_text=f['label'],
-                default_type=map_import_type(f['type']),
-                default_options=",".join(f.get('options', [])),
-                abs_pos=f.get('abs_pos'),
-                request_layout=is_global_last,
-                request_preview=is_global_last
-            )
+        # ESTRATEGIA NUEVA: Cargar al editor visual (canvas) es INSTANTÁNEO
+        # El editor visual usa canvas, no widgets pesados de CustomTkinter
+        self.status_label.configure(text=f"⚡ Cargando {total} campos...", text_color="#007AFF")
+        self.update_idletasks()
+        
+        # Limpiar editor visual
+        self.visual_editor.clear_fields()
+        
+        # Factor de escala (150 DPI para el editor visual)
+        scale_factor = 150.0 / 72.0
+        
+        # Cargar TODOS los campos al editor visual (INSTANTÁNEO - es solo canvas)
+        for f in fields:
+            abs_pos = f.get('abs_pos')
+            if abs_pos:
+                self.visual_editor.add_field_from_data({
+                    'label': f['label'],
+                    'type': map_type_to_internal(f['type']),
+                    'options': f.get('options', []),
+                    'abs_pos': {
+                        'x': abs_pos['x'] * scale_factor,
+                        'y': abs_pos['y'] * scale_factor,
+                        'w': abs_pos['w'] * scale_factor,
+                        'h': abs_pos['h'] * scale_factor,
+                        'page': abs_pos.get('page', 0)
+                    }
+                })
+        
+        # Redibujar campos en canvas (RÁPIDO)
+        self.visual_editor._redraw_fields()
+        
+        # Mensaje de éxito
+        self.status_label.configure(text=f"✅ {total} campos cargados - {os.path.basename(bg_path)}", text_color="#34C759")
+        
+        # Actualizar página
+        self._update_page_info()
+    
+    def _finalize_import(self, total, bg_path):
+        """Finaliza la importación: muestra el contenedor y actualiza todo."""
+        try:
+            # Mostrar el contenedor de campos de nuevo
+            if hasattr(self.app_generator, 'fields_scroll'):
+                self.app_generator.fields_scroll.pack(fill="both", expand=True, padx=15, pady=(0, 10))
             
-        if end_idx < total:
-            self.status_label.configure(text=f"📥 Importando campos ({end_idx}/{total})...", text_color="#007AFF")
-            # Delay mínimo de 1ms para no bloquear pero ir al máximo
-            self.after(1, lambda: self._import_fields_sequentially(fields, end_idx, bg_path))
-        else:
+            # Actualizar layout de todos los campos
+            self.app_generator.refresh_fields_layout()
+            # Actualizar preview
+            self.app_generator.update_preview()
+            # Actualizar página
             self._update_page_info()
-            self.status_label.configure(text=f"PDF Cargado: {os.path.basename(bg_path)}", text_color="#34C759")
+            # Mensaje de éxito
+            self.status_label.configure(text=f"✅ {total} campos importados - {os.path.basename(bg_path)}", text_color="#34C759")
+        except Exception as e:
+            print(f"Error finalizando importación: {e}")
+            self.status_label.configure(text=f"⚠️ Importación completada con errores", text_color="#FF9500")
 
     def sync_from_generator(self):
         """Carga los campos y el PDF del Generador Avanzado al Editor Visual."""
@@ -331,9 +361,14 @@ class PDFMasterPro(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Error de Sincronización", f"No se pudo sincronizar:\n{str(e)}")
 
+
     def sync_to_generator(self, request_preview=True):
-        """Aplica los cambios realizados en el Editor Visual de vuelta al Generador Avanzado."""
+        """Aplica los cambios realizados en el Editor Visual de vuelta al Generador Avanzado (RÁPIDO)."""
         fields = self.visual_editor.get_fields()
+        
+        # OPTIMIZACIÓN: Ocultar contenedor para sincronización ultra-rápida
+        if hasattr(self.app_generator, 'fields_scroll'):
+            self.app_generator.fields_scroll.pack_forget()
         
         # Limpiar campos actuales en el generador (Modo Batch)
         self.app_generator.clear_fields(request_layout=False, request_preview=False)
@@ -353,33 +388,95 @@ class PDFMasterPro(ctk.CTk):
                     'page': abs_pos.get('page', 0)
                 }
                 
-                # Solo redibujar en el último campo
-                is_last = (i == total - 1)
+                # Crear campos sin layout ni preview (rápido)
                 self.app_generator.add_field_row(
                     default_text=field.get('label', ''),
                     default_type=map_import_type(field.get('type', 'text')),
                     default_column='Ancho Completo',
                     default_options=",".join(field.get('options', [])),
                     abs_pos=scaled_abs_pos,
-                    request_layout=is_last,
-                    request_preview=is_last and request_preview
+                    request_layout=False,
+                    request_preview=False
                 )
+        
+        # Mostrar contenedor de nuevo
+        if hasattr(self.app_generator, 'fields_scroll'):
+            self.app_generator.fields_scroll.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        
+        # Actualizar layout y preview solo si se solicita
+        if total > 0:
+            self.app_generator.refresh_fields_layout()
+            if request_preview:
+                self.app_generator.update_preview()
         
         self.status_label.configure(text="Sincronizado con Generador", text_color="#34C759")
 
     def export_pdf_from_visual(self):
-        """Sincroniza y exporta el PDF directamente."""
-        # 1. Sincronizar campos (sin preview para ir rápido)
-        self.sync_to_generator(request_preview=False)
+        """Exporta el PDF añadiendo SOLO los campos sin modificar el contenido original."""
+        from tkinter import filedialog
+        from src.core.pdf_simple_fields import añadir_campos_a_pdf
         
-        # 2. Sincronizar título y estilos
-        self._sync_title_to_gen()
-        self._sync_style_to_gen()
+        # Obtener campos directamente del editor visual
+        fields = self.visual_editor.get_fields()
         
-        # 3. Disparar generación
-        self.status_label.configure(text="Generando PDF...", text_color="#007AFF")
-        self.app_generator.generate_pdf()
-        self.status_label.configure(text="Exportado", text_color="#34C759")
+        if not fields:
+            messagebox.showwarning("Sin campos", "No hay campos para exportar.")
+            return
+        
+        # Verificar que hay un PDF de fondo
+        bg_pdf_path = self.app_generator.config_visual.get('bg_pdf_path')
+        if not bg_pdf_path or not os.path.exists(bg_pdf_path):
+            messagebox.showerror("Error", "No hay PDF de fondo cargado.")
+            return
+        
+        # Factor de escala (de 150 DPI a 72 DPI)
+        scale_factor = 72.0 / 150.0
+        
+        # Convertir campos a formato simple
+        campos_scaled = []
+        for field in fields:
+            abs_pos = field.get('abs_pos')
+            if abs_pos:
+                campos_scaled.append({
+                    'label': field.get('label', ''),
+                    'type': field.get('type', 'text'),
+                    'options': field.get('options', []),
+                    'abs_pos': {
+                        'x': abs_pos['x'] * scale_factor,
+                        'y': abs_pos['y'] * scale_factor,
+                        'w': abs_pos['w'] * scale_factor,
+                        'h': abs_pos['h'] * scale_factor,
+                        'page': abs_pos.get('page', 0)
+                    }
+                })
+        
+        # Obtener ruta de salida
+        output_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Guardar PDF con campos"
+        )
+        
+        if not output_path:
+            return
+        
+        try:
+            # Añadir campos al PDF original (SIN modificar contenido)
+            self.status_label.configure(text="⚡ Añadiendo campos al PDF...", text_color="#007AFF")
+            self.update_idletasks()
+            
+            añadir_campos_a_pdf(
+                input_pdf_path=bg_pdf_path,
+                output_pdf_path=output_path,
+                campos=campos_scaled
+            )
+            
+            self.status_label.configure(text=f"✅ PDF exportado: {os.path.basename(output_path)}", text_color="#34C759")
+            messagebox.showinfo("Éxito", f"PDF con campos guardado correctamente:\n{output_path}")
+            
+        except Exception as e:
+            self.status_label.configure(text="❌ Error al exportar", text_color="#FF3B30")
+            messagebox.showerror("Error", f"No se pudo generar el PDF:\n{str(e)}")
 
     def _sync_title_to_gen(self):
         self.app_generator.title_entry.delete(0, "end")

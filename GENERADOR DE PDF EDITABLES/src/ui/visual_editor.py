@@ -23,13 +23,20 @@ logger = logging.getLogger(__name__)
 class FieldBox:
     """Representa un campo visual en el canvas"""
     
-    def __init__(self, x: float, y: float, w: float, h: float, label: str = "Campo", page: int = 0):
+    def __init__(self, x: float, y: float, w: float, h: float, label: str = "Campo", page: int = 0, 
+                 field_type: str = "text", options: list = None, font_size: int = 12, 
+                 required: bool = False, validation: str = "Ninguno"):
         self.x = x
         self.y = y
         self.w = w
         self.h = h
         self.label = label
         self.page = page
+        self.type = field_type
+        self.options = options or []
+        self.font_size = font_size
+        self.required = required
+        self.validation = validation
         self.selected = False
         self.canvas_id = None
         self.text_id = None
@@ -43,7 +50,7 @@ class FieldBox:
         """Convierte el campo a diccionario"""
         return {
             'label': self.label,
-            'type': 'text',
+            'type': self.type,
             'abs_pos': {
                 'x': self.x,
                 'y': self.y,
@@ -52,9 +59,12 @@ class FieldBox:
                 'page': self.page
             },
             'column': 'full',
-            'required': False,
-            'options': []
+            'required': self.required,
+            'options': self.options,
+            'font_size': self.font_size,
+            'validation': self.validation
         }
+
 
 
 class PDFVisualEditor(ctk.CTkFrame):
@@ -84,6 +94,7 @@ class PDFVisualEditor(ctk.CTkFrame):
         self.drag_mode: Optional[str] = None  # 'create', 'move', 'resize'
         self.creating_field: Optional[FieldBox] = None
         self.current_page: int = 0  # Página actual del PDF
+        self.clipboard_field: Optional[Dict] = None  # Para copiar/pegar
         
         # Configuración
         self.field_color = "#3498db"
@@ -95,9 +106,14 @@ class PDFVisualEditor(ctk.CTkFrame):
     
     def _setup_ui(self):
         """Configura la interfaz del editor"""
-        # Crear contenedor para scrollbars
+        # Layout principal: canvas a la izquierda, panel de propiedades a la derecha
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0)
+        
+        # Crear contenedor para canvas y scrollbars
         self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(fill="both", expand=True)
+        self.container.grid(row=0, column=0, sticky="nsew")
         
         # Grid layout para canvas y scrollbars
         self.container.grid_rowconfigure(0, weight=1)
@@ -120,16 +136,36 @@ class PDFVisualEditor(ctk.CTkFrame):
         
         self.canvas.configure(yscrollcommand=self.v_scrollbar.set, xscrollcommand=self.h_scrollbar.set)
         
+        # Panel de propiedades a la derecha
+        from src.ui.properties_panel import PropertiesPanel
+        self.properties_panel = PropertiesPanel(self, on_property_changed=self._on_property_changed)
+        self.properties_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self.properties_panel.configure(width=250)
+        
         # Eventos del mouse
         self.canvas.bind("<Button-1>", self._on_mouse_down)
         self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
         self.canvas.bind("<Double-Button-1>", self._on_double_click)
         self.canvas.bind("<Motion>", self._on_mouse_move)
+        self.canvas.bind("<Button-3>", self._show_context_menu)  # Clic derecho
+        
+        # Atajos de teclado
+        self.canvas.bind("<Control-c>", lambda e: self.copy_selected_field())
+        self.canvas.bind("<Control-v>", lambda e: self.paste_field())
+        self.canvas.bind("<Control-d>", lambda e: self.duplicate_selected_field())
+        self.canvas.bind("<Delete>", lambda e: self.delete_selected_field())
+        self.canvas.bind("<Up>", lambda e: self.move_selected_field(0, -5))
+        self.canvas.bind("<Down>", lambda e: self.move_selected_field(0, 5))
+        self.canvas.bind("<Left>", lambda e: self.move_selected_field(-5, 0))
+        self.canvas.bind("<Right>", lambda e: self.move_selected_field(5, 0))
         
         # Zoom / Scroll con rueda
         self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.canvas.bind("<Shift-MouseWheel>", self._on_mouse_wheel_h)
+        
+        # Focus para que funcionen los atajos
+        self.canvas.focus_set()
         
         # Cargar imagen si existe
         if self.pdf_image:
@@ -199,6 +235,7 @@ class PDFVisualEditor(ctk.CTkFrame):
         if clicked_field:
             # Seleccionar campo existente
             self.selected_field = clicked_field
+            self.properties_panel.set_field(clicked_field)  # Actualizar panel
             self.drag_start = (x, y)
             
             # Determinar modo de arrastre
@@ -220,6 +257,7 @@ class PDFVisualEditor(ctk.CTkFrame):
                 page=self.current_page
             )
             self.selected_field = None
+            self.properties_panel.set_field(None)  # Limpiar panel
         
         self._redraw_fields()
     
@@ -267,6 +305,7 @@ class PDFVisualEditor(ctk.CTkFrame):
             if self.creating_field.w > 20 and self.creating_field.h > 10:
                 self.fields.append(self.creating_field)
                 self.selected_field = self.creating_field
+                self.properties_panel.set_field(self.creating_field)  # Actualizar panel
                 logger.info(f"Campo creado: {self.creating_field.label}")
                 
                 # Notificar cambios
@@ -361,6 +400,13 @@ class PDFVisualEditor(ctk.CTkFrame):
             if self.on_fields_changed:
                 self.on_fields_changed(self.get_fields())
     
+    def get_fields(self) -> List[Dict]:
+        """
+        Obtiene todos los campos como lista de diccionarios.
+        
+        Returns:
+            Lista de campos con sus propiedades
+        """
         return [f.to_dict() for f in self.fields]
     
     def add_field_from_data(self, field_data: Dict):
@@ -377,7 +423,9 @@ class PDFVisualEditor(ctk.CTkFrame):
             w=abs_pos.get('w', 150),
             h=abs_pos.get('h', 20),
             label=field_data.get('label', 'Campo'),
-            page=abs_pos.get('page', 0)
+            page=abs_pos.get('page', 0),
+            field_type=field_data.get('type', 'text'),
+            options=field_data.get('options', [])
         )
         self.fields.append(field)
         self._redraw_fields()
@@ -420,11 +468,123 @@ class PDFVisualEditor(ctk.CTkFrame):
         if self.selected_field:
             self.fields.remove(self.selected_field)
             self.selected_field = None
+            self.properties_panel.set_field(None)
             self._redraw_fields()
             
             # Notificar cambios
             if self.on_fields_changed:
                 self.on_fields_changed(self.get_fields())
+    
+    def copy_selected_field(self):
+        """Copia el campo seleccionado al clipboard"""
+        if self.selected_field:
+            self.clipboard_field = self.selected_field.to_dict()
+            logger.info(f"Campo copiado: {self.selected_field.label}")
+    
+    def paste_field(self):
+        """Pega el campo del clipboard"""
+        if not self.clipboard_field:
+            return
+        
+        # Crear campo con offset para que no se superponga
+        field_data = self.clipboard_field.copy()
+        abs_pos = field_data.get('abs_pos', {})
+        
+        new_field = FieldBox(
+            x=abs_pos.get('x', 0) + 20,  # Offset
+            y=abs_pos.get('y', 0) + 20,
+            w=abs_pos.get('w', 150),
+            h=abs_pos.get('h', 20),
+            label=field_data.get('label', 'Campo'),
+            page=abs_pos.get('page', 0),
+            field_type=field_data.get('type', 'text'),
+            options=field_data.get('options', []),
+            font_size=field_data.get('font_size', 12),
+            required=field_data.get('required', False),
+            validation=field_data.get('validation', 'Ninguno')
+        )
+        
+        self.fields.append(new_field)
+        self.selected_field = new_field
+        self.properties_panel.set_field(new_field)
+        self._redraw_fields()
+        
+        logger.info(f"Campo pegado: {new_field.label}")
+        
+        # Notificar cambios
+        if self.on_fields_changed:
+            self.on_fields_changed(self.get_fields())
+    
+    def duplicate_selected_field(self):
+        """Duplica el campo seleccionado"""
+        if self.selected_field:
+            self.copy_selected_field()
+            self.paste_field()
+    
+    def move_selected_field(self, dx: float, dy: float):
+        """Mueve el campo seleccionado con las flechas del teclado"""
+        if self.selected_field:
+            self.selected_field.x += dx
+            self.selected_field.y += dy
+            self._redraw_fields()
+            
+            # Notificar cambios
+            if self.on_fields_changed:
+                self.on_fields_changed(self.get_fields())
+    
+    def _show_context_menu(self, event):
+        """Muestra menú contextual al hacer clic derecho"""
+        from tkinter import Menu
+        
+        # Verificar si hay un campo bajo el cursor
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        clicked_field = None
+        for field in reversed(self.fields):
+            if field.contains_point(x, y):
+                clicked_field = field
+                break
+        
+        if clicked_field:
+            self.selected_field = clicked_field
+            self.properties_panel.set_field(clicked_field)
+            self._redraw_fields()
+        
+        # Crear menú
+        menu = Menu(self, tearoff=0)
+        
+        if self.selected_field:
+            menu.add_command(label="Copiar (Ctrl+C)", command=self.copy_selected_field)
+            menu.add_command(label="Duplicar (Ctrl+D)", command=self.duplicate_selected_field)
+            menu.add_command(label="Eliminar (Delete)", command=self.delete_selected_field)
+            menu.add_separator()
+        
+        if self.clipboard_field:
+            menu.add_command(label="Pegar (Ctrl+V)", command=self.paste_field)
+        
+        if menu.index("end") is not None:
+            menu.post(event.x_root, event.y_root)
+    
+    def _on_property_changed(self, properties: dict):
+        """Callback cuando cambian las propiedades en el panel"""
+        if not self.selected_field:
+            return
+        
+        # Actualizar campo con nuevas propiedades
+        self.selected_field.label = properties.get('label', self.selected_field.label)
+        self.selected_field.type = properties.get('type', self.selected_field.type)
+        self.selected_field.font_size = properties.get('font_size', self.selected_field.font_size)
+        self.selected_field.required = properties.get('required', self.selected_field.required)
+        self.selected_field.validation = properties.get('validation', self.selected_field.validation)
+        self.selected_field.options = properties.get('options', self.selected_field.options)
+        
+        self._redraw_fields()
+        
+        # Notificar cambios
+        if self.on_fields_changed:
+            self.on_fields_changed(self.get_fields())
+
 
     def _on_mouse_wheel(self, event):
         """Scroll vertical con la rueda del ratón"""

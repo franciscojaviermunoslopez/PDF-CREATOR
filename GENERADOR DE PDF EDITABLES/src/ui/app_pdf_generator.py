@@ -894,9 +894,10 @@ class PDFGeneratorApp(ctk.CTkFrame):
                                  border_color=row_border, fg_color=row_bg)
         row_frame.grid_columnconfigure(2, weight=1) 
         
-        # Efecto Hover Sutil (Apple Highlight)
-        row_frame.bind("<Enter>", lambda e: row_frame.configure(border_color="#007AFF", border_width=2))
-        row_frame.bind("<Leave>", lambda e: row_frame.configure(border_color=row_border, border_width=1))
+        # Efecto Hover Sutil (Apple Highlight) - Solo si se necesita preview para evitar overhead
+        if request_preview:
+            row_frame.bind("<Enter>", lambda e: row_frame.configure(border_color="#007AFF", border_width=2))
+            row_frame.bind("<Leave>", lambda e: row_frame.configure(border_color=row_border, border_width=1))
 
         # --- Col 0: Index y Handle de Drag (Look Apple/Adobe) ---
         idx_label = ctk.CTkLabel(row_frame, text=f"⁝⁝ {len(self.field_rows)+1}", 
@@ -912,7 +913,9 @@ class PDFGeneratorApp(ctk.CTkFrame):
                              text_color=("black", "white"), placeholder_text_color=("#8E8E93", "#8E8E93"))
         if default_text: entry.insert(0, default_text)
         entry.grid(row=0, column=1, padx=10, sticky="ew")
-        entry.bind("<KeyRelease>", lambda e: self.request_preview_update())
+        # Solo bind KeyRelease si se necesita preview (evita actualizaciones innecesarias durante importación)
+        if request_preview:
+            entry.bind("<KeyRelease>", lambda e: self.request_preview_update())
 
         # --- Col 2,3,4: Selectores estilizados ---
         ctrl_style = {"height": 32, "corner_radius": 10, "fg_color": ("#E5E5EA", "#2C2C2E"), 
@@ -926,7 +929,9 @@ class PDFGeneratorApp(ctk.CTkFrame):
 
         cols = ["Ancho Completo", "Columna Izq", "Columna Der"]
         col_var = ctk.StringVar(value=default_column)
-        col_menu = ctk.CTkOptionMenu(row_frame, values=cols, variable=col_var, width=110, command=lambda v: self.update_preview(), **ctrl_style)
+        # Solo actualizar preview si se solicita (evita overhead en batch)
+        col_menu = ctk.CTkOptionMenu(row_frame, values=cols, variable=col_var, width=110, 
+                                     command=lambda v: self.update_preview() if request_preview else None, **ctrl_style)
         col_menu.grid(row=0, column=3, padx=5)
 
         options_entry = ctk.CTkEntry(row_frame, placeholder_text="Opciones...", width=110, height=32, 
@@ -934,7 +939,9 @@ class PDFGeneratorApp(ctk.CTkFrame):
                                      fg_color=("#FFFFFF", "#1A1B1C"), text_color=("black", "white"),
                                      placeholder_text_color=("#8E8E93", "#8E8E93"))
         if default_options: options_entry.insert(0, default_options)
-        options_entry.bind("<KeyRelease>", lambda e: self.request_preview_update())
+        # Solo bind si se necesita preview
+        if request_preview:
+            options_entry.bind("<KeyRelease>", lambda e: self.request_preview_update())
         
         # --- Col 5: Borrado y Colapso ---
         # Botón de colapso para secciones (initially hidden or special)
