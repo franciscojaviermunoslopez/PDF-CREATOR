@@ -25,7 +25,8 @@ class FieldBox:
     
     def __init__(self, x: float, y: float, w: float, h: float, label: str = "Campo", page: int = 0, 
                  field_type: str = "text", options: list = None, font_size: int = 12, 
-                 required: bool = False, validation: str = "Ninguno"):
+                 required: bool = False, validation: str = "Ninguno", max_length: int = 0,
+                 is_original: bool = False):
         self.x = x
         self.y = y
         self.w = w
@@ -37,6 +38,8 @@ class FieldBox:
         self.font_size = font_size
         self.required = required
         self.validation = validation
+        self.max_length = max_length  # 0 = sin límite
+        self.is_original = is_original  # Indica si el campo venía en el PDF original
         self.selected = False
         self.canvas_id = None
         self.text_id = None
@@ -62,7 +65,9 @@ class FieldBox:
             'required': self.required,
             'options': self.options,
             'font_size': self.font_size,
-            'validation': self.validation
+            'validation': self.validation,
+            'max_length': self.max_length,
+            'is_original': self.is_original
         }
 
 
@@ -89,7 +94,8 @@ class PDFVisualEditor(ctk.CTkFrame):
         self.pdf_image = pdf_image
         self.on_fields_changed = on_fields_changed
         self.fields: List[FieldBox] = []
-        self.selected_field: Optional[FieldBox] = None
+        self.selected_field: Optional[FieldBox] = None  # Campo principal seleccionado
+        self.selected_fields: List[FieldBox] = []  # Lista de campos seleccionados (multi-select)
         self.drag_start: Optional[Tuple[float, float]] = None
         self.drag_mode: Optional[str] = None  # 'create', 'move', 'resize'
         self.creating_field: Optional[FieldBox] = None
@@ -99,7 +105,10 @@ class PDFVisualEditor(ctk.CTkFrame):
         # Configuración
         self.field_color = "#3498db"
         self.selected_color = "#e74c3c"
+        self.multi_selected_color = "#f39c12"  # Color para campos en multi-selección
+
         self.creating_color = "#2ecc71"
+        self.original_color = "#9b59b6"  # Morado para campos originales
         self.field_alpha = 0.3
         
         self._setup_ui()
@@ -150,26 +159,31 @@ class PDFVisualEditor(ctk.CTkFrame):
         self.canvas.bind("<Motion>", self._on_mouse_move)
         self.canvas.bind("<Button-3>", self._show_context_menu)  # Clic derecho
         
-        # Atajos de teclado
-        self.canvas.bind("<Control-c>", lambda e: self.copy_selected_field())
-        self.canvas.bind("<Control-v>", lambda e: self.paste_field())
-        self.canvas.bind("<Control-d>", lambda e: self.duplicate_selected_field())
-        self.canvas.bind("<Delete>", lambda e: self.delete_selected_field())
-        self.canvas.bind("<Up>", lambda e: self.move_selected_field(0, -5))
-        self.canvas.bind("<Down>", lambda e: self.move_selected_field(0, 5))
-        self.canvas.bind("<Left>", lambda e: self.move_selected_field(-5, 0))
-        self.canvas.bind("<Right>", lambda e: self.move_selected_field(5, 0))
+        # Atajos de teclado - bindings en el canvas
+        self.canvas.bind("<Control-c>", lambda e: self.copy_selected_field() or "break")
+        self.canvas.bind("<Control-v>", lambda e: self.paste_field() or "break")
+        self.canvas.bind("<Control-d>", lambda e: self.duplicate_selected_field() or "break")
+        self.canvas.bind("<Delete>", lambda e: self.delete_selected_field() or "break")
+        self.canvas.bind("<Up>", lambda e: self.move_selected_field(0, -5) or "break")
+        self.canvas.bind("<Down>", lambda e: self.move_selected_field(0, 5) or "break")
+        self.canvas.bind("<Left>", lambda e: self.move_selected_field(-5, 0) or "break")
+        self.canvas.bind("<Right>", lambda e: self.move_selected_field(5, 0) or "break")
+        # Intentar con Ctrl+A mayúscula (a veces funciona en canvas)
+        self.canvas.bind("<Control-A>", lambda e: (print("Ctrl+A presionado"), self.select_all_fields(), "break"))
+        self.canvas.bind("<Control-Shift-A>", lambda e: (print("Ctrl+Shift+A presionado"), self.select_all_fields(), "break"))
+        self.canvas.bind("<Escape>", lambda e: self.deselect_all_fields() or "break")
         
         # Zoom / Scroll con rueda
         self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.canvas.bind("<Shift-MouseWheel>", self._on_mouse_wheel_h)
         
-        # Focus para que funcionen los atajos
+        # Dar foco al canvas al inicio
         self.canvas.focus_set()
         
         # Cargar imagen si existe
         if self.pdf_image:
             self.load_pdf_image(self.pdf_image)
+
     
     def load_pdf_image(self, image: Image.Image):
         """
@@ -203,9 +217,9 @@ class PDFVisualEditor(ctk.CTkFrame):
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         
-        # Verificar si está sobre un campo
+        # Verificar si está sobre un campo de la página actual
         for field in reversed(self.fields):
-            if field.contains_point(x, y):
+            if field.page == self.current_page and field.contains_point(x, y):
                 # Verificar si está en el borde para resize
                 edge_threshold = 10
                 at_right_edge = abs(x - (field.x + field.w)) < edge_threshold
@@ -222,13 +236,16 @@ class PDFVisualEditor(ctk.CTkFrame):
     
     def _on_mouse_down(self, event):
         """Maneja el botón del mouse presionado"""
+        # Dar foco al canvas para que funcionen los atajos de teclado
+        self.canvas.focus_set()
+        
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         
-        # Verificar si se hizo clic en un campo existente
+        # Verificar si se hizo clic en un campo existente de la página actual
         clicked_field = None
         for field in reversed(self.fields):
-            if field.contains_point(x, y):
+            if field.page == self.current_page and field.contains_point(x, y):
                 clicked_field = field
                 break
         
@@ -343,7 +360,20 @@ class PDFVisualEditor(ctk.CTkFrame):
         for field in self.fields:
             if field.page != self.current_page:
                 continue
-            color = self.selected_color if field == self.selected_field else self.field_color
+            
+            # Determinar color según si está seleccionado
+            if field in self.selected_fields:
+                # Campo en selección múltiple
+                color = self.multi_selected_color
+            elif field == self.selected_field:
+                # Campo principal seleccionado
+                color = self.selected_color
+            else:
+                # Campo normal u original
+                color = self.original_color if field.is_original else self.field_color
+            
+            # Determinar estilo de línea (discontinuo para originales si no están seleccionados)
+            dash = (5, 2) if field.is_original and field != self.selected_field and field not in self.selected_fields else None
             
             # Rectángulo del campo
             field.canvas_id = self.canvas.create_rectangle(
@@ -351,6 +381,7 @@ class PDFVisualEditor(ctk.CTkFrame):
                 field.x + field.w, field.y + field.h,
                 outline=color,
                 width=2,
+                dash=dash,
                 tags="field"
             )
             
@@ -421,11 +452,16 @@ class PDFVisualEditor(ctk.CTkFrame):
             x=abs_pos.get('x', 0),
             y=abs_pos.get('y', 0),
             w=abs_pos.get('w', 150),
-            h=abs_pos.get('h', 20),
+            h=abs_pos.get('h', 30),
             label=field_data.get('label', 'Campo'),
             page=abs_pos.get('page', 0),
             field_type=field_data.get('type', 'text'),
-            options=field_data.get('options', [])
+            options=field_data.get('options', []),
+            font_size=field_data.get('font_size', 12),
+            required=field_data.get('required', False),
+            validation=field_data.get('validation', 'Ninguno'),
+            max_length=field_data.get('max_length', 0),
+            is_original=field_data.get('is_original', False)
         )
         self.fields.append(field)
         self._redraw_fields()
@@ -571,19 +607,95 @@ class PDFVisualEditor(ctk.CTkFrame):
         if not self.selected_field:
             return
         
-        # Actualizar campo con nuevas propiedades
-        self.selected_field.label = properties.get('label', self.selected_field.label)
-        self.selected_field.type = properties.get('type', self.selected_field.type)
-        self.selected_field.font_size = properties.get('font_size', self.selected_field.font_size)
-        self.selected_field.required = properties.get('required', self.selected_field.required)
-        self.selected_field.validation = properties.get('validation', self.selected_field.validation)
-        self.selected_field.options = properties.get('options', self.selected_field.options)
+        # Si hay múltiples campos seleccionados, aplicar a todos
+        fields_to_update = self.selected_fields if len(self.selected_fields) > 1 else [self.selected_field]
+        
+        # Actualizar todos los campos seleccionados con nuevas propiedades
+        for field in fields_to_update:
+            field.label = properties.get('label', field.label)
+            field.type = properties.get('type', field.type)
+            field.font_size = properties.get('font_size', field.font_size)
+            field.required = properties.get('required', field.required)
+            field.validation = properties.get('validation', field.validation)
+            field.options = properties.get('options', field.options)
+            field.max_length = properties.get('max_length', field.max_length)
         
         self._redraw_fields()
         
         # Notificar cambios
         if self.on_fields_changed:
             self.on_fields_changed(self.get_fields())
+
+
+    def select_all_fields(self):
+        """Selecciona todos los campos de la página actual (Ctrl+Shift+A)"""
+        if not self.fields:
+            return
+        
+        # Filtrar solo campos de la página actual
+        current_page_fields = [f for f in self.fields if f.page == self.current_page]
+        
+        if not current_page_fields:
+            return
+        
+        # Seleccionar todos los campos de la página actual
+        self.selected_fields = current_page_fields.copy()
+        self.selected_field = current_page_fields[0]
+        
+        # Actualizar panel - mostrar el primero
+        self.properties_panel.set_field(self.selected_field)
+        
+        # Marcar solo los de la página actual como seleccionados
+        for field in self.fields:
+            field.selected = (field.page == self.current_page)
+        
+        # Redibujar los campos para mostrar la selección
+        self._redraw_fields()
+        logger.info(f"Seleccionados {len(self.selected_fields)} campos de la página {self.current_page}")
+    
+    def deselect_all_fields(self):
+        """Deselecciona todos los campos (Escape)"""
+        self.selected_fields.clear()
+        self.selected_field = None
+        self.properties_panel.set_field(None)
+        self._redraw_fields()
+        logger.info("Campos deseleccionados")
+
+    # Métodos para manejar atajos de teclado
+    def _handle_copy(self):
+        """Maneja Ctrl+C"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.copy_selected_field()
+    
+    def _handle_paste(self):
+        """Maneja Ctrl+V"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.paste_field()
+    
+    def _handle_duplicate(self):
+        """Maneja Ctrl+D"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.duplicate_selected_field()
+    
+    def _handle_delete(self):
+        """Maneja Delete"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.delete_selected_field()
+    
+    def _handle_move(self, dx, dy):
+        """Maneja flechas de dirección"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.move_selected_field(dx, dy)
+    
+    def _handle_select_all(self):
+        """Maneja Ctrl+A"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.select_all_fields()
+    
+    def _handle_deselect_all(self):
+        """Maneja Escape"""
+        if self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery()) == self.canvas:
+            self.deselect_all_fields()
 
 
     def _on_mouse_wheel(self, event):

@@ -38,6 +38,10 @@ class DocumentAnalyzer:
         'ciudad': r'(?i)(ciudad|city|localidad|poblaci[oó]n)',
         'provincia': r'(?i)(provincia|state|regi[oó]n)',
         'pais': r'(?i)(pa[ií]s|country)',
+        'don': r'(?i)(don|doña|sr\.?|sra\.?|firmante)',
+        'domicilio': r'(?i)(domicilio|residencia|vivienda)',
+        'matricula': r'(?i)(matr[ií]cula|bastidor|chasis)',
+        'vendedor': r'(?i)(vendedor|comprador|arrendador|arrendatario)',
     }
     
     def __init__(self):
@@ -55,11 +59,12 @@ class DocumentAnalyzer:
             # Intentar extraer campos AcroForm primero
             acroform_fields = self._extract_acroform_fields(doc)
             
-            # Si no hay AcroForm, buscar patrones visuales
-            if not acroform_fields:
+            # Si hay pocos o ningún campo AcroForm, buscar patrones visuales
+            if len(acroform_fields) < 3:
                 visual_fields = self._extract_visual_fields(doc, progress_callback)
-                fields = visual_fields
-                has_acroform = False
+                # Combinar ambos (evitando duplicados por posición)
+                fields = acroform_fields + visual_fields
+                has_acroform = len(acroform_fields) > 0
             else:
                 fields = acroform_fields
                 has_acroform = True
@@ -128,15 +133,22 @@ class DocumentAnalyzer:
                     'column': 'full',
                     'options': [],
                     'required': False,
-                    'validation': 'Ninguno'
+                    'validation': 'Ninguno',
+                    'is_original': True  # Marcar como campo preexistente
                 }
                 
                 # Si es dropdown o radio, extraer opciones
                 if field_type in ['dropdown', 'radio']:
-                    field_info['options'] = widget.field_value or []
+                    field_info['options'] = widget.field_values or []
                 
+                # Intentar obtener valor actual si existe
+                if widget.field_value:
+                    field_info['value'] = widget.field_value
+
                 fields.append(field_info)
         
+        if fields:
+            print(f"🔍 [ANALYZER] Detectados {len(fields)} campos AcroForm reales.")
         return fields
     
     def _extract_visual_fields(self, doc: fitz.Document, progress_callback=None) -> List[Dict]:
@@ -597,7 +609,9 @@ class DocumentAnalyzer:
                 'nombre', 'apellido', 'apellidos', 'email', 'correo', 'teléfono', 'telefono', 
                 'móvil', 'movil', 'dni', 'nif', 'nie', 'fecha', 'sexo', 'edad', 'dirección', 
                 'direccion', 'ciudad', 'provincia', 'país', 'pais', 'cp', 'código', 'codigo',
-                'iban', 'cuenta', 'banco', 'empresa', 'cargo', 'puesto', 'departamento'
+                'iban', 'cuenta', 'banco', 'empresa', 'cargo', 'puesto', 'departamento',
+                'don', 'doña', 'vendedor', 'comprador', 'domicilio', 'matrícula', 'chasis', 
+                'marca', 'modelo', 'titular', 'interesado', 'adquirente', 'transmitente'
             ]
             
             # Si contiene una palabra clave, aceptar directamente

@@ -212,6 +212,14 @@ def map_import_type(import_type):
 
 def map_type_to_internal(display_type):
     """Mapea el tipo de visualización al tipo interno."""
+    if not display_type:
+        return 'text'
+        
+    # Si ya es un tipo interno, devolverlo tal cual
+    internal_types = ['text', 'date', 'checkbox', 'dropdown', 'radio', 'multiline', 'signature', 'number']
+    if display_type.lower() in internal_types:
+        return display_type.lower()
+        
     type_map = {
         'Texto': 'text', 'Fecha': 'date', 'Checkbox': 'checkbox',
         'Dropdown': 'dropdown', 'Radio Buttons': 'radio',

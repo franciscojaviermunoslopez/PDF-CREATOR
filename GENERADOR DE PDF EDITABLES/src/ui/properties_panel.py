@@ -88,6 +88,12 @@ class PropertiesPanel(ctk.CTkFrame):
         )
         self.validation_menu.pack(fill="x", pady=(0, 10))
         
+        # Límite de caracteres
+        ctk.CTkLabel(scroll_frame, text="Límite de caracteres (0 = sin límite):", anchor="w").pack(fill="x", pady=(5, 2))
+        self.max_length_entry = ctk.CTkEntry(scroll_frame, placeholder_text="0")
+        self.max_length_entry.pack(fill="x", pady=(0, 10))
+        self.max_length_entry.bind("<KeyRelease>", lambda e: self._on_property_change())
+        
         # Opciones (para dropdown/radio)
         ctk.CTkLabel(scroll_frame, text="Opciones (separadas por coma):", anchor="w").pack(fill="x", pady=(5, 2))
         self.options_entry = ctk.CTkEntry(scroll_frame, placeholder_text="Opción1, Opción2, Opción3")
@@ -146,6 +152,10 @@ class PropertiesPanel(ctk.CTkFrame):
             self.required_var.set(field.required)
             self.validation_var.set(field.validation)
             
+            # Max length
+            self.max_length_entry.delete(0, "end")
+            self.max_length_entry.insert(0, str(field.max_length))
+            
             # Opciones
             if field.options:
                 self.options_entry.delete(0, "end")
@@ -165,6 +175,8 @@ class PropertiesPanel(ctk.CTkFrame):
             self.font_size_var.set("12")
             self.required_var.set(False)
             self.validation_var.set("Ninguno")
+            self.max_length_entry.delete(0, "end")
+            self.max_length_entry.insert(0, "0")
             self.options_entry.delete(0, "end")
             self.options_entry.pack_forget()
             self.help_label.pack(pady=20)
@@ -181,11 +193,17 @@ class PropertiesPanel(ctk.CTkFrame):
         options_text = self.options_entry.get().strip()
         options = [opt.strip() for opt in options_text.split(",")] if options_text else []
         
+        try:
+            max_len = int(self.max_length_entry.get() or "0")
+        except ValueError:
+            max_len = 0
+        
         return {
             'label': self.name_entry.get(),
             'type': self.type_var.get(),
             'font_size': int(self.font_size_var.get()),
             'required': self.required_var.get(),
             'validation': self.validation_var.get(),
-            'options': options
+            'options': options,
+            'max_length': max_len
         }

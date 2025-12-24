@@ -209,9 +209,18 @@ class PDFMasterPro(ctk.CTk):
                                 text_color="#FF9500"
                             ))
                         
+                        # Analizar PDF para detectar campos AcroForm existentes
                         result = analyzer.analyze_pdf(bg_path, progress_callback=progress)
+                        
                         # Volver al hilo principal para mostrar resultados
-                        self.after(100, lambda: self._handle_analysis_result(result, bg_path))
+                        def finalize():
+                            if result and result.get('success') and result.get('fields'):
+                                self._handle_analysis_result(result, bg_path)
+                            else:
+                                self.status_label.configure(text=f"PDF Cargado (sin campos detectados)", text_color="#34C759")
+                                self._update_page_info()
+                        
+                        self.after(100, finalize)
                     except Exception as e:
                         print(f"Error en análisis: {e}")
                         self.after(100, lambda: self.status_label.configure(text=f"Error en detección", text_color="red"))
@@ -441,6 +450,10 @@ class PDFMasterPro(ctk.CTk):
                     'label': field.get('label', ''),
                     'type': field.get('type', 'text'),
                     'options': field.get('options', []),
+                    'font_size': field.get('font_size', 12),
+                    'required': field.get('required', False),
+                    'validation': field.get('validation', 'Ninguno'),
+                    'max_length': field.get('max_length', 0),
                     'abs_pos': {
                         'x': abs_pos['x'] * scale_factor,
                         'y': abs_pos['y'] * scale_factor,
